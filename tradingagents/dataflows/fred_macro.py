@@ -44,7 +44,7 @@ def get_macro_data(series_id: str, start_date: str = None, end_date: str = None,
             return f"No data found for FRED series: {series_id}"
             
         lines = [f"### FRED Macroeconomic Data: {series_id.upper()}"]
-        lines.append(f"Observation Count: {len(observations)} (Showing latest {limit} entries first)")
+        lines.append(f"Observation Count: {len(observations)} (Showing latest entries first)")
         lines.append("Date       | Value")
         lines.append("-" * 20)
         
