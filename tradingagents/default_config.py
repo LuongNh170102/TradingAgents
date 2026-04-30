@@ -1,11 +1,35 @@
 import os
+import tempfile
+from pathlib import Path
 
 _TRADINGAGENTS_HOME = os.path.join(os.path.expanduser("~"), ".tradingagents")
+def get_default_cache_dir() -> str:
+    """Return a writable cache directory across local and Docker environments."""
+
+    env_path = os.getenv("TRADINGAGENTS_CACHE_DIR")
+    if env_path:
+        return env_path
+
+    candidate = Path(_TRADINGAGENTS_HOME) / "cache"
+
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+        test_file = candidate / ".write_test"
+        test_file.touch(exist_ok=True)
+        test_file.unlink(missing_ok=True)
+        return str(candidate)
+    except Exception:
+        pass
+
+    fallback = Path(tempfile.gettempdir()) / "tradingagents" / "cache"
+    fallback.mkdir(parents=True, exist_ok=True)
+    return str(fallback)
+
 
 DEFAULT_CONFIG = {
     "project_dir": os.path.abspath(os.path.join(os.path.dirname(__file__), ".")),
     "results_dir": os.getenv("TRADINGAGENTS_RESULTS_DIR", os.path.join(_TRADINGAGENTS_HOME, "logs")),
-    "data_cache_dir": os.getenv("TRADINGAGENTS_CACHE_DIR", os.path.join(_TRADINGAGENTS_HOME, "cache")),
+    "data_cache_dir": get_default_cache_dir(),
     "memory_log_path": os.getenv("TRADINGAGENTS_MEMORY_LOG_PATH", os.path.join(_TRADINGAGENTS_HOME, "memory", "trading_memory.md")),
     # Optional cap on the number of resolved memory log entries. When set,
     # the oldest resolved entries are pruned once this limit is exceeded.
