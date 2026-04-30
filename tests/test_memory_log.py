@@ -483,12 +483,79 @@ class TestDeferredReflection:
         assert "-5.0%" in human_content
         assert "Exit position immediately." in human_content
 
+    def test_reflect_default_benchmark_is_spy(self):
+        """When benchmark is not passed, the prompt still says 'Alpha vs SPY'."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value.content = "ok"
+        reflector = Reflector(mock_llm)
+        reflector.reflect_on_final_decision(
+            final_decision=DECISION_BUY, raw_return=0.04, alpha_return=0.02
+        )
+        human_content = next(
+            c for r, c in mock_llm.invoke.call_args[0][0] if r == "human"
+        )
+        assert "Alpha vs SPY:" in human_content
+
+    def test_reflect_uses_provided_benchmark(self):
+        """A custom benchmark name flows into the human prompt."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value.content = "ok"
+        reflector = Reflector(mock_llm)
+        reflector.reflect_on_final_decision(
+            final_decision=DECISION_BUY,
+            raw_return=0.04,
+            alpha_return=0.02,
+            benchmark="^NSEI",
+        )
+        human_content = next(
+            c for r, c in mock_llm.invoke.call_args[0][0] if r == "human"
+        )
+        assert "Alpha vs ^NSEI:" in human_content
+        assert "Alpha vs SPY:" not in human_content
+
+    # TradingAgentsGraph._resolve_benchmark
+
+    def test_resolve_benchmark_default_us_ticker(self):
+        from tradingagents.default_config import DEFAULT_CONFIG
+        mock_graph = MagicMock(spec=TradingAgentsGraph)
+        mock_graph.config = DEFAULT_CONFIG
+        assert TradingAgentsGraph._resolve_benchmark(mock_graph, "NVDA") == "SPY"
+
+    def test_resolve_benchmark_nse_suffix(self):
+        from tradingagents.default_config import DEFAULT_CONFIG
+        mock_graph = MagicMock(spec=TradingAgentsGraph)
+        mock_graph.config = DEFAULT_CONFIG
+        assert TradingAgentsGraph._resolve_benchmark(mock_graph, "RELIANCE.NS") == "^NSEI"
+
+    def test_resolve_benchmark_hk_suffix(self):
+        from tradingagents.default_config import DEFAULT_CONFIG
+        mock_graph = MagicMock(spec=TradingAgentsGraph)
+        mock_graph.config = DEFAULT_CONFIG
+        assert TradingAgentsGraph._resolve_benchmark(mock_graph, "0700.HK") == "^HSI"
+
+    def test_resolve_benchmark_explicit_override_wins(self):
+        """benchmark_ticker beats the suffix map entirely."""
+        mock_graph = MagicMock(spec=TradingAgentsGraph)
+        mock_graph.config = {
+            "benchmark_ticker": "QQQ",
+            "benchmark_map": {".NS": "^NSEI", "": "SPY"},
+        }
+        assert TradingAgentsGraph._resolve_benchmark(mock_graph, "RELIANCE.NS") == "QQQ"
+        assert TradingAgentsGraph._resolve_benchmark(mock_graph, "NVDA") == "QQQ"
+
+    def test_resolve_benchmark_falls_back_when_map_missing(self):
+        """No benchmark_ticker, no benchmark_map → SPY."""
+        mock_graph = MagicMock(spec=TradingAgentsGraph)
+        mock_graph.config = {}
+        assert TradingAgentsGraph._resolve_benchmark(mock_graph, "NVDA") == "SPY"
+
     # TradingAgentsGraph._fetch_returns
 
     def test_fetch_returns_valid_ticker(self):
         stock_prices = [100.0, 102.0, 104.0, 103.0, 105.0, 106.0]
         spy_prices   = [400.0, 402.0, 404.0, 403.0, 405.0, 406.0]
         mock_graph = MagicMock(spec=TradingAgentsGraph)
+        mock_graph._resolve_benchmark.return_value = "SPY"
         with patch("yfinance.Ticker") as mock_ticker_cls:
             def _make_ticker(sym):
                 m = MagicMock()
@@ -521,10 +588,11 @@ class TestDeferredReflection:
         assert raw is None and alpha is None and days is None
 
     def test_fetch_returns_spy_shorter_than_stock(self):
-        """SPY having fewer rows than the stock must not raise IndexError."""
+        """Benchmark having fewer rows than the stock must not raise IndexError."""
         stock_prices = [100.0, 102.0, 104.0, 103.0, 105.0, 106.0]
         spy_prices   = [400.0, 402.0, 403.0]
         mock_graph = MagicMock(spec=TradingAgentsGraph)
+        mock_graph._resolve_benchmark.return_value = "SPY"
         with patch("yfinance.Ticker") as mock_ticker_cls:
             def _make_ticker(sym):
                 m = MagicMock()
@@ -534,6 +602,30 @@ class TestDeferredReflection:
             raw, alpha, days = TradingAgentsGraph._fetch_returns(mock_graph, "NVDA", "2026-01-05")
         assert raw is not None and alpha is not None and days is not None
         assert days == 2
+
+    def test_fetch_returns_uses_resolved_benchmark(self):
+        """_fetch_returns must request the benchmark resolved by _resolve_benchmark, not SPY."""
+        stock_prices = [100.0, 102.0, 104.0, 103.0, 105.0, 106.0]
+        nifty_prices = [20000.0, 20100.0, 20200.0, 20150.0, 20250.0, 20300.0]
+        mock_graph = MagicMock(spec=TradingAgentsGraph)
+        mock_graph._resolve_benchmark.return_value = "^NSEI"
+        requested = []
+        with patch("yfinance.Ticker") as mock_ticker_cls:
+            def _make_ticker(sym):
+                requested.append(sym)
+                m = MagicMock()
+                m.history.return_value = _price_df(
+                    nifty_prices if sym == "^NSEI" else stock_prices
+                )
+                return m
+            mock_ticker_cls.side_effect = _make_ticker
+            raw, alpha, days = TradingAgentsGraph._fetch_returns(
+                mock_graph, "RELIANCE.NS", "2026-01-05"
+            )
+        assert raw is not None and alpha is not None and days is not None
+        assert "^NSEI" in requested
+        assert "SPY" not in requested
+        mock_graph._resolve_benchmark.assert_called_once_with("RELIANCE.NS")
 
     # TradingAgentsGraph._resolve_pending_entries
 
