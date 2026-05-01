@@ -1,13 +1,11 @@
 """Sentiment analyst — qualitative tone and sentiment analysis of recent news.
 
-Previously named ``social_media_analyst``. Renamed because the only available
-data tool is ``get_news`` (Yahoo Finance headlines), not a social media feed.
-The prompt has been updated to reflect what the agent actually does: it
-analyzes the *tone* and *sentiment* of recent news articles rather than
-claiming to process Reddit, X/Twitter, or StockTwits data that it does not
-have access to.
+This analyst analyzes the tone and sentiment of news articles and headlines
+for a company using Yahoo Finance data. It assesses whether coverage is bullish,
+bearish, or neutral and identifies narrative themes.
 
-See: https://github.com/TauricResearch/TradingAgents/issues/557
+For social media sentiment analysis (Reddit, Fear & Greed Index), see
+``social_media_analyst`` which monitors retail investor sentiment.
 """
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -89,28 +87,3 @@ def create_sentiment_analyst(llm):
         }
 
     return sentiment_analyst_node
-
-
-# ---------------------------------------------------------------------------
-# Backwards-compatibility shim
-# ---------------------------------------------------------------------------
-def create_social_media_analyst(llm):
-    """Deprecated alias for :func:`create_sentiment_analyst`.
-
-    The agent was renamed from ``social_media_analyst`` to ``sentiment_analyst``
-    because it does not actually consume social media data — it analyzes the
-    tone of Yahoo Finance news headlines.  This alias is kept so that existing
-    code that imports ``create_social_media_analyst`` continues to work without
-    modification.
-
-    .. deprecated::
-        Import :func:`create_sentiment_analyst` directly instead.
-    """
-    import warnings
-    warnings.warn(
-        "create_social_media_analyst is deprecated and will be removed in a "
-        "future version. Use create_sentiment_analyst instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return create_sentiment_analyst(llm)
