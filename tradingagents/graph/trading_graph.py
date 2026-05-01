@@ -18,6 +18,7 @@ from tradingagents.llm_clients import create_llm_client
 from tradingagents.agents import *
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.agents.utils.memory import TradingMemoryLog
+from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.agents.utils.agent_states import (
     AgentState,
     InvestDebateState,
@@ -37,6 +38,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_insider_transactions,
     get_global_news
 )
+from tradingagents.agents.utils.sentiment_tools import get_reddit_sentiment, get_market_fear_greed
 
 from .checkpointer import checkpoint_step, clear_checkpoint, get_checkpointer, thread_id
 from .conditional_logic import ConditionalLogic
@@ -164,8 +166,8 @@ class TradingAgentsGraph:
             ),
             "social": ToolNode(
                 [
-                    # News tools for social media analysis
-                    get_news,
+                    get_reddit_sentiment,
+                    get_market_fear_greed,
                 ]
             ),
             "news": ToolNode(
@@ -187,10 +189,36 @@ class TradingAgentsGraph:
             ),
         }
 
+    def _resolve_benchmark(self, ticker: str) -> str:
+        """Resolve the benchmark symbol for a ticker.
+
+        Explicit ``benchmark_ticker`` config wins for every analysis. Otherwise
+        the longest matching suffix in ``benchmark_map`` is picked (so ``.BO``
+        beats ``""``), falling back to the ``""`` entry, and finally ``SPY``
+        if neither config key is set.
+        """
+        explicit = self.config.get("benchmark_ticker")
+        if explicit:
+            return explicit
+        benchmark_map = self.config.get("benchmark_map") or {}
+        for suffix in sorted((s for s in benchmark_map if s), key=len, reverse=True):
+            if ticker.endswith(suffix):
+                return benchmark_map[suffix]
+        return benchmark_map.get("", "SPY")
+
     def _fetch_returns(
-        self, ticker: str, trade_date: str, holding_days: int = 5
+        self,
+        ticker: str,
+        trade_date: str,
+        holding_days: int = 5,
+        benchmark: Optional[str] = None,
     ) -> Tuple[Optional[float], Optional[float], Optional[int]]:
         """Fetch raw and alpha return for ticker over holding_days from trade_date.
+
+        ``benchmark`` may be passed by callers that already resolved it (e.g.
+        :meth:`_resolve_pending_entries` does so once per ticker), avoiding
+        redundant resolution work in batch loops. When ``None`` it is resolved
+        from the ticker.
 
         Returns (raw_return, alpha_return, actual_holding_days) or
         (None, None, None) if price data is unavailable (too recent, delisted,
@@ -201,22 +229,28 @@ class TradingAgentsGraph:
             end = start + timedelta(days=holding_days + 7)  # buffer for weekends/holidays
             end_str = end.strftime("%Y-%m-%d")
 
+            if benchmark is None:
+                benchmark = self._resolve_benchmark(ticker)
             stock = yf.Ticker(ticker).history(start=trade_date, end=end_str)
-            spy = yf.Ticker("SPY").history(start=trade_date, end=end_str)
+            # Skip the duplicate request when the user analyses the benchmark
+            # itself (e.g. SPY vs SPY → alpha is 0 by definition).
+            bench = stock if benchmark == ticker else yf.Ticker(benchmark).history(
+                start=trade_date, end=end_str
+            )
 
-            if len(stock) < 2 or len(spy) < 2:
+            if len(stock) < 2 or len(bench) < 2:
                 return None, None, None
 
-            actual_days = min(holding_days, len(stock) - 1, len(spy) - 1)
+            actual_days = min(holding_days, len(stock) - 1, len(bench) - 1)
             raw = float(
                 (stock["Close"].iloc[actual_days] - stock["Close"].iloc[0])
                 / stock["Close"].iloc[0]
             )
-            spy_ret = float(
-                (spy["Close"].iloc[actual_days] - spy["Close"].iloc[0])
-                / spy["Close"].iloc[0]
+            bench_ret = float(
+                (bench["Close"].iloc[actual_days] - bench["Close"].iloc[0])
+                / bench["Close"].iloc[0]
             )
-            alpha = raw - spy_ret
+            alpha = raw - bench_ret
             return raw, alpha, actual_days
         except Exception as e:
             logger.warning(
@@ -239,15 +273,19 @@ class TradingAgentsGraph:
         if not pending:
             return
 
+        benchmark = self._resolve_benchmark(ticker)
         updates = []
         for entry in pending:
-            raw, alpha, days = self._fetch_returns(ticker, entry["date"])
+            raw, alpha, days = self._fetch_returns(
+                ticker, entry["date"], benchmark=benchmark
+            )
             if raw is None:
                 continue  # price not available yet — try again next run
             reflection = self.reflector.reflect_on_final_decision(
                 final_decision=entry.get("decision", ""),
                 raw_return=raw,
                 alpha_return=alpha,
+                benchmark=benchmark,
             )
             updates.append({
                 "ticker": ticker,
@@ -378,8 +416,10 @@ class TradingAgentsGraph:
             "final_trade_decision": final_state["final_trade_decision"],
         }
 
-        # Save to file
-        directory = Path(self.config["results_dir"]) / self.ticker / "TradingAgentsStrategy_logs"
+        # Save to file. Reject ticker values that would escape the
+        # results directory when joined as a path component.
+        safe_ticker = safe_ticker_component(self.ticker)
+        directory = Path(self.config["results_dir"]) / safe_ticker / "TradingAgentsStrategy_logs"
         directory.mkdir(parents=True, exist_ok=True)
 
         log_path = directory / f"full_states_log_{trade_date}.json"
