@@ -25,6 +25,7 @@ from .alpha_vantage import (
 from .alpha_vantage_common import AlphaVantageRateLimitError
 from .reddit_sentiment import get_reddit_sentiment as get_reddit_sentiment_impl
 from .fear_greed import get_fear_greed as get_fear_greed_impl
+from .fred_macro import get_macro_data as get_fred_macro_data
 
 # Configuration and routing logic
 from .config import get_config
@@ -66,12 +67,19 @@ TOOLS_CATEGORIES = {
             "get_reddit_sentiment",
             "get_market_fear_greed",
         ]
+    },
+    "macro_data": {
+        "description": "Macroeconomic indicators",
+        "tools": [
+            "get_macro_data"
+        ]
     }
 }
 
 VENDOR_LIST = [
     "yfinance",
     "alpha_vantage",
+    "fred",
 ]
 
 # Mapping of methods to their vendor-specific implementations
@@ -122,6 +130,10 @@ VENDOR_METHODS = {
     },
     "get_market_fear_greed": {
         "default": get_fear_greed_impl,
+    },
+    # macro_data
+    "get_macro_data": {
+        "fred": get_fred_macro_data,
     },
 }
 
