@@ -74,15 +74,38 @@ Portfolio Manager   → DeepSeek R1        (quyết định cuối cùng)
 
 #### Memory System
 
-- **Short-term Memory:** Lệnh đang mở, signal vừa phát, context thị trường hôm nay
-- **Long-term Memory:** Lịch sử toàn bộ lệnh, win/loss record, pattern hay thắng/thua
-- **Reflection Memory:** Sau mỗi lệnh thua → AI tự phân tích "tại sao sai" → lưu bài học → áp dụng lần sau
+- **Raw Memory:** Lưu toàn bộ memory thô của tất cả mode ở dạng log gốc, chưa kết luận sâu. Mục đích là audit, debug, truy vết.
+- **Lesson Memory:** Lưu các bài học đã lọc từ raw memory, chỉ tạo khi đủ mẫu và đủ tin cậy. Đây là tầng dữ liệu chính để các mode đọc lại.
+- **Global Memory:** Tập hợp các lesson đã lọc và chuẩn hóa, dùng chung cho trade mode và các mode khác khi cần tham chiếu.
+
+#### Nguyên tắc xử lý memory
+
+- Tất cả mode đều **ghi kết quả vào raw memory trước**.
+- Sau đó một service xử lý sẽ đọc raw memory, group theo strategy/timeframe/regime/mode, lọc nhiễu, và tạo lesson.
+- Lesson chỉ được đẩy lên global memory khi đạt ngưỡng tin cậy (ví dụ: đủ số lượng case, có pattern rõ ràng, kết quả ổn định).
+- **Trade mode chỉ đọc global lesson memory** hoặc lesson đã lọc, không dùng raw trực tiếp để ra quyết định.
+- Raw memory chỉ dùng để debug, audit, và tái xử lý khi cần.
+
+#### Tại sao phải tách memory?
+
+- Để tránh học nhầm từ các mode khác nhau.
+- Để một lệnh sai của `td1` không làm trade mode kết luận sai cho cả chiến lược.
+- Để raw case và lesson chung không bị trộn lẫn, giảm noise.
+- Để có thể đánh giá hiệu quả từng mode / strategy / timeframe riêng biệt.
+
+#### Kiến trúc memory đề xuất
+
+- **Raw memory:** JSONL, ghi append-only theo `mode_id`, `strategy`, `timeframe`, `vps_id`, `account_id`.
+- **Lesson memory:** JSON, lưu pattern đã lọc và có confidence score.
+- **Global memory:** JSON/DB/vector store cho các lesson đã xác thực cao.
 
 **Cấu trúc dữ liệu lưu mỗi lệnh:**
 
 ```json
 {
   "trade_id": "BTC_20250115_001",
+  "mode_id": "td1",
+  "strategy": "breakout",
   "coin": "BTC-USD",
   "signal": "BUY",
   "entry": 67000,
@@ -97,7 +120,29 @@ Portfolio Manager   → DeepSeek R1        (quyết định cuối cùng)
   },
   "ai_reasoning": "RSI oversold, reversal expected",
   "reflection": "Sai vì không chú ý Fed meeting. RSI oversold không đủ khi có macro event lớn",
-  "lesson": "Avoid BUY signals 24h before Fed meetings regardless of RSI"
+  "lesson_candidate": "Avoid BUY signals 24h before Fed meetings regardless of RSI",
+  "memory_tier": "raw"
+}
+```
+
+**Ví dụ lesson đã lọc:**
+
+```json
+{
+  "lesson_id": "lesson_0007",
+  "strategy": "breakout",
+  "timeframe": "5m",
+  "condition": {
+    "market_regime": "sideway",
+    "volume": "low"
+  },
+  "lesson": "Breakout trades in low-volume sideways markets have a high failure rate.",
+  "recommendation": "Avoid opening new breakout positions unless volume confirms momentum.",
+  "confidence": 0.86,
+  "evidence_count": 27,
+  "source_modes": ["td1", "tr2"],
+  "last_updated": "2026-05-03T10:30:00Z",
+  "memory_tier": "global"
 }
 ```
 
@@ -206,6 +251,10 @@ tradingagents/
 │   └── binance_executor.py      # Đặt lệnh Binance sau khi confirm
 │
 ├── memory/
+│   ├── raw/                     # Raw logs của tất cả mode
+│   ├── lessons/                 # Lesson đã lọc theo strategy/timeframe
+│   ├── global/                  # Global memory đã chuẩn hóa
+│   ├── memory_processor.py      # Xử lý raw → lesson → global
 │   ├── trade_memory.py          # Lưu lịch sử + reflection
 │   └── ... (existing files)
 │
@@ -341,6 +390,7 @@ LOG_LEVEL=INFO
 - [ ] Track kết quả, validate win rate thực tế
 
 ### Tháng 4+: Optimization
+- [ ] Nâng cấp `memory_processor.py` — raw → lesson → global
 - [ ] Nâng cấp `trade_memory.py` — reflection learning
 - [ ] Tinh chỉnh indicator thresholds dựa trên dữ liệu thực
 - [ ] Thêm coins mới nếu muốn
@@ -372,6 +422,12 @@ LOG_LEVEL=INFO
 - Ghi lại tất cả lệnh kể cả lệnh skip
 - Review performance hàng tuần
 - AI học từ sai lầm để cải thiện
+
+### 6. Memory Discipline
+- Raw memory chỉ là nguồn sự thật
+- Lesson memory phải được lọc trước khi lên global
+- Trade mode chỉ đọc global lesson memory
+- Không để raw case quyết định trực tiếp lệnh thật
 
 ---
 
